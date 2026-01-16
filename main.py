@@ -2,6 +2,7 @@ import os
 import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -79,9 +80,11 @@ Return STRICT JSON in this format:
 
     ai_output = call_ai(prompt)
 
+    output_str = json.dumps(ai_output) if isinstance(ai_output, dict) else ai_output
+
     return jsonify({
         "input": data,
-        "output": ai_output
+        "output": output_str
     })
 
 
