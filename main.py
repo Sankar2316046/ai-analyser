@@ -1,8 +1,9 @@
 import os
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, Response, request, jsonify
 from flask_cors import CORS
 import json
+import html
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,39 +16,133 @@ app = Flask(__name__)
 # Enable CORS for Next.js frontend
 CORS(app, origins=["http://localhost:3000"])
 
-# -----------------------------
-# Call OpenRouter
-# -----------------------------
-def call_ai(prompt):
+def call_ai(prompt, stream=False):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": "http://localhost:5000",
         "X-Title": "Exam Generator"
     }
-
     payload = {
         "model": "meta-llama/llama-3-8b-instruct",
         "messages": [
-            {"role": "system", "content": "You are an exam question generator. Respond ONLY in valid JSON."},
+            {"role": "system", "content": "You are an exam question generator. Respond ONLY with COMPLETE valid JSON objects, ONE QUESTION PER LINE. Never use arrays. Format EXACTLY: {\"question\":\"...\",\"options\":[\"A. text\",\"B. text\",\"C. text\",\"D. text\"],\"correct_answer\":\"A\",\"topic\":\"...\",\"difficulty\":\"...\"}. Escape all quotes properly. No extra text."},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.3
+        "temperature": 0.1,  # Lower for consistency
+        "stream": stream
     }
-
-    response = requests.post(OPENROUTER_URL, headers=headers, json=payload)
-    data = response.json()
-
-    # Proper error handling
-    if "choices" not in data:
+    
+    response = requests.post(OPENROUTER_URL, headers=headers, json=payload, stream=stream)
+    
+    if not stream:
+        data = response.json()
+        if "choices" in data:
+            return data["choices"][0]["message"]["content"]
         return data
+    
+    # Streaming mode: yield content chunks
+    buffer = ""
+    for line in response.iter_lines():
+        if line:
+            line = line.decode('utf-8')
+            if line.startswith('data: '):
+                chunk_data = line[6:]
+                if chunk_data == '[DONE]':
+                    break
+                try:
+                    chunk = json.loads(chunk_data)
+                    if 'choices' in chunk and chunk['choices'][0].get('delta', {}).get('content'):
+                        content = chunk['choices'][0]['delta']['content']
+                        buffer += content or ''
+                        # Yield complete JSON lines
+                        while '\n' in buffer:
+                            nl_pos = buffer.find('\n')
+                            json_line = buffer[:nl_pos]
+                            buffer = buffer[nl_pos+1:]
+                            if json_line.strip():
+                                yield json_line.strip()
+                except:
+                    pass
+    if buffer.strip():
+        yield buffer.strip()
 
-    return data["choices"][0]["message"]["content"]
+@app.route("/generate", methods=["POST"])
+def generate():
+    data = request.json
+
+    domain = data.get("domain")
+    topics = data.get("topics", [])
+    difficulty = data.get("difficulty")
+    per_topic_count = int(data.get("question_count_per_topic", 2))
+
+    total_expected = len(topics) * per_topic_count
+
+    def generate_stream():
+        yield json.dumps({
+            "meta": {
+                "domain": domain,
+                "topics": topics,
+                "per_topic": per_topic_count,
+                "total_expected": total_expected
+            }
+        }) + "\n"
+
+        for topic in topics:
+            generated_for_topic = 0
+
+            prompt = f"""
+Generate EXACTLY {per_topic_count} {difficulty}-level MCQ questions ONLY for this topic.
+
+Domain: {domain}
+Topic: {topic}
+
+RULES:
+- Topic MUST be "{topic}"
+- Output ONE JSON object per line
+- No arrays, no markdown, no explanation
+
+Format:
+{{"question":"","options":["A. ","B. ","C. ","D. "],"correct_answer":"A","topic":"{topic}","difficulty":"{difficulty}"}}
+"""
+
+            for chunk in call_ai(prompt, stream=True):
+                try:
+                    question = json.loads(chunk)
+
+                    # -------- HARD VALIDATION --------
+                    if question.get("topic") != topic:
+                        continue
+                    if len(question.get("options", [])) != 4:
+                        continue
+                    # --------------------------------
+
+                    # Normalize
+                    letter_to_index = {"A": 0, "B": 1, "C": 2, "D": 3}
+                    question["correct_answer"] = letter_to_index.get(
+                        question["correct_answer"], 0
+                    )
+                    question["options"] = [html.unescape(opt[3:]) for opt in question["options"]]
+                    question["question"] = html.unescape(question["question"])
+
+                    yield json.dumps(question) + "\n"
+                    generated_for_topic += 1
+
+                    if generated_for_topic >= per_topic_count:
+                        break
+
+                except json.JSONDecodeError:
+                    continue
+
+        yield json.dumps({
+            "done": True,
+            "total": total_expected
+        }) + "\n"
+
+    return Response(generate_stream(), mimetype="application/x-ndjson")
 
 
-# -----------------------------
-# Skill Analysis Endpoint
-# -----------------------------
+
 @app.route("/skill-analysis", methods=["POST"])
 def skill_analysis():
     data = request.json
@@ -138,50 +233,6 @@ def skill_analysis():
     }
 
     return jsonify(result)
-
-
-# -----------------------------
-# API Endpoint
-# -----------------------------
-@app.route("/generate", methods=["POST"])
-def generate():
-    data = request.json
-
-    domain = data.get("domain")
-    topics = data.get("topics", [])
-    difficulty = data.get("difficulty")
-    count = data.get("question_count_per_topic", 5)
-
-    prompt = f"""
-Generate {count} {difficulty}-level MCQ questions for each topic below.
-
-Domain: {domain}
-Topics: {topics}
-
-Return STRICT JSON in this format:
-
-{{
-  "questions": [
-    {{
-      "question": "",
-      "options": ["", "", "", ""],
-      "correct_answer": "",
-      "topic": "",
-      "difficulty": ""
-    }}
-  ]
-}}
-"""
-
-    ai_output = call_ai(prompt)
-
-    output_str = json.dumps(ai_output) if isinstance(ai_output, dict) else ai_output
-
-    return jsonify({
-        "input": data,
-        "output": output_str
-    })
-
 
 if __name__ == "__main__":
     app.run(debug=True)
