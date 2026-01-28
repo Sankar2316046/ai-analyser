@@ -4,6 +4,7 @@ from flask import Flask, Response, request, jsonify, make_response
 import json
 import html
 from dotenv import load_dotenv
+from flask_cors import CORS
 
 load_dotenv()
 
@@ -259,7 +260,6 @@ def skill_analysis():
     }
 
     return jsonify(result)
-return response
 
 if __name__ == "__main__":
     listen_port = int(os.getenv('X_ZOHO_CATALYST_LISTEN_PORT', 5000))  # Default to 5000 if not set
