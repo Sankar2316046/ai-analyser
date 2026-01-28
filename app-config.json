@@ -1,0 +1,11 @@
+{
+	"command": "python -u main.py",
+	"build_path": "./",
+	"stack": "python_3_9",
+	"env_variables": {},
+	"memory": 256,
+	"scripts": {
+		"preserve": "python -m pip install -r ./requirements.txt -t ./ --upgrade",
+		"predeploy": "python -m pip install -r ./requirements.txt -t ./ --upgrade"
+	}
+}

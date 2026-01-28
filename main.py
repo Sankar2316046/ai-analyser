@@ -1,7 +1,6 @@
 import os
 import requests
-from flask import Flask, Response, request, jsonify
-from flask_cors import CORS
+from flask import Flask, Response, request, jsonify, make_response
 import json
 import html
 from dotenv import load_dotenv
@@ -13,14 +12,40 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 app = Flask(__name__)
 
-# Enable CORS for Next.js frontend
-CORS(app, origins=["http://localhost:3000"])
+ALLOWED_ORIGIN = "https://cognify-teacher.vercel.app"
+
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = make_response("", 200)
+        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+        response.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        return response
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+    return response
+
+CORS(
+    app,
+    origins=["https://cognify-teacher.vercel.app"],
+    allow_headers=["Content-Type", "Authorization"],
+    methods=["POST", "GET", "OPTIONS"]
+)
+
+@app.route("/<path:path>", methods=["OPTIONS"])
+def options_handler(path):
+    return Response(status=200)
+
 
 def call_ai(prompt, stream=False):
+    REFERER_URL = os.getenv("REFERER_URL", "http://localhost:5000")
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost:5000",
+        "HTTP-Referer": REFERER_URL,
         "X-Title": "Exam Generator"
     }
     payload = {
@@ -66,6 +91,7 @@ def call_ai(prompt, stream=False):
                     pass
     if buffer.strip():
         yield buffer.strip()
+
 
 @app.route("/generate", methods=["POST"])
 def generate():
@@ -233,6 +259,8 @@ def skill_analysis():
     }
 
     return jsonify(result)
+return response
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    listen_port = int(os.getenv('X_ZOHO_CATALYST_LISTEN_PORT', 5000))  # Default to 5000 if not set
+    app.run(host="0.0.0.0", port=listen_port)
